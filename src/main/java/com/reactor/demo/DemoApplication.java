@@ -9,20 +9,28 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 import org.springframework.data.repository.reactive.ReactiveCrudRepository;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.server.RouterFunction;
 import org.springframework.web.reactive.function.server.ServerResponse;
+import org.springframework.web.reactive.handler.SimpleUrlHandlerMapping;
+import org.springframework.web.reactive.socket.WebSocketHandler;
+import org.springframework.web.reactive.socket.WebSocketMessage;
+import org.springframework.web.reactive.socket.WebSocketSession;
+import org.springframework.web.reactive.socket.server.support.WebSocketHandlerAdapter;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -33,69 +41,105 @@ import static org.springframework.web.reactive.function.server.ServerResponse.ok
 @SpringBootApplication
 public class DemoApplication {
 
-	public static void main(String[] args) {
-		SpringApplication.run(DemoApplication.class, args);
-	}
+    public static void main(String[] args) {
+        SpringApplication.run(DemoApplication.class, args);
+    }
 
-	@Bean
-	RouterFunction<ServerResponse> routes(GreetingService gs){
-		return route()
-				.GET("greeting/name", serverRequest -> ok().body(gs.greet(), String.class))
-				.build();
-	}
+    @Bean
+    RouterFunction<ServerResponse> routes(GreetingService gs) {
+        return route()
+                .GET("greeting/name", serverRequest -> handleGreeting(gs))
+                .build();
+    }
+
+    private Mono<ServerResponse> handleGreeting(GreetingService gs) {
+        return ok().contentType(MediaType.TEXT_EVENT_STREAM).body(gs.greetMany(), String.class);
+    }
 }
 
+@Configuration
+class GreetingWebSocketConfiguration {
+    @Bean
+    SimpleUrlHandlerMapping simpleUrlHandlerMapping(WebSocketHandler webSocketHandler) {
+        return new SimpleUrlHandlerMapping(Map.of("ws/greeting", webSocketHandler), 10);
+    }
+
+    @Bean
+    WebSocketHandler webSocketHandler(GreetingService greetingService) {
+        return new WebSocketHandler() {
+            @Override
+            public Mono<Void> handle(WebSocketSession webSocketSession) {
+
+                Flux<WebSocketMessage> receive = webSocketSession.receive();
+                Flux<String> names = receive.map(WebSocketMessage::getPayloadAsText);
+                Flux<String> requestFlux = names.flatMap(greetingService::greet);
+                Flux<WebSocketMessage> webSocketMessageFlux = requestFlux.map(webSocketSession::textMessage);
+                return webSocketSession.send(webSocketMessageFlux);
+
+            }
+        };
+    }
+
+    @Bean
+    WebSocketHandlerAdapter webSocketHandlerAdapter() {
+        return new WebSocketHandlerAdapter();
+    }
+}
 
 @Service
 class GreetingService {
 
 
-	Flux<String> greetMany(){
-		return Flux.fromStream(Stream.generate(() -> "Ahmed"))
-				.delayElements(Duration.ofSeconds(1)).subscribeOn(Schedulers.elastic());
-	}
-	Mono<String> greetOnce(){
-		return Mono.just("Hi there");
-	}
+    Flux<String> greetMany() {
+        return Flux.fromStream(Stream.generate(() -> "Ahmed"))
+                .delayElements(Duration.ofSeconds(1)).subscribeOn(Schedulers.elastic());
+    }
+
+    Flux<String> greetOnce() {
+        return Flux.just("Hi there");
+    }
+
+    Flux<String> greet(String name) {
+        return Flux.just(name);
+    }
 }
 
-	@Component
-	@RequiredArgsConstructor
-	@Log4j2
-	class SampleDataInitializer{
+@Component
+@RequiredArgsConstructor
+@Log4j2
+class SampleDataInitializer {
 
-		private final ReservationRepository reservationRepository;
+    private final ReservationRepository reservationRepository;
 
-		@EventListener(ApplicationReadyEvent.class)
-		public void ready(){
-			Flux<Reservation> reservation = Flux
-					.just("Mohab Nazmy", "El Houssine", "Ghita Adnani", "Omar Abaza", "Umer Farouq")
-					.map( name -> new Reservation(UUID.randomUUID().toString(), name))
-					.flatMap(reservationRepository::save);
-			reservation.subscribe();
+    @EventListener(ApplicationReadyEvent.class)
+    public void ready() {
+        Flux<Reservation> reservation = Flux
+                .just("Mohab Nazmy", "El Houssine", "Ghita Adnani", "Omar Abaza", "Umer Farouq")
+                .map(name -> new Reservation(UUID.randomUUID().toString(), name))
+                .flatMap(reservationRepository::save);
+        reservation.subscribe();
 
-			this.reservationRepository.deleteAll()
-					.thenMany(reservation)
-					.thenMany(reservationRepository.findAll())
-					.subscribe(log::info);
-		}
+        this.reservationRepository.deleteAll()
+                .thenMany(reservation)
+                .thenMany(reservationRepository.findAll())
+                .subscribe(log::info);
+    }
 
 
-	}
+}
 
-	interface ReservationRepository extends ReactiveCrudRepository<Reservation, String>{
-		Flux<Reservation> findByName(String name);
-	}
+interface ReservationRepository extends ReactiveCrudRepository<Reservation, String> {
+    Flux<Reservation> findByName(String name);
+}
 
-	@Document
-	@Data
-	@AllArgsConstructor
-	@NoArgsConstructor
-	class Reservation
-	{
-		@Id
-		private String id;
-		private String name;
-	}
+@Document
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+class Reservation {
+    @Id
+    private String id;
+    private String name;
+}
 
 
