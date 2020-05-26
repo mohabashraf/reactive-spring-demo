@@ -15,8 +15,10 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 import org.springframework.data.repository.reactive.ReactiveCrudRepository;
 import org.springframework.http.MediaType;
+import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.BodyInserter;
 import org.springframework.web.reactive.function.server.RouterFunction;
 import org.springframework.web.reactive.function.server.ServerResponse;
 import org.springframework.web.reactive.handler.SimpleUrlHandlerMapping;
@@ -37,6 +39,7 @@ import java.util.stream.Stream;
 
 import static org.springframework.web.reactive.function.server.RouterFunctions.route;
 import static org.springframework.web.reactive.function.server.ServerResponse.ok;
+import static org.springframework.web.reactive.function.server.ServerResponse.status;
 
 @SpringBootApplication
 public class DemoApplication {
@@ -48,6 +51,7 @@ public class DemoApplication {
     @Bean
     RouterFunction<ServerResponse> routes(GreetingService gs) {
         return route()
+                .GET("greetingOnce/{name}", serverRequest -> ok().body(gs.greetOnce(serverRequest.pathVariable("name")),String.class))
                 .GET("greeting/name", serverRequest -> handleGreeting(gs))
                 .build();
     }
@@ -58,6 +62,7 @@ public class DemoApplication {
 }
 
 @Configuration
+@Log4j2
 class GreetingWebSocketConfiguration {
     @Bean
     SimpleUrlHandlerMapping simpleUrlHandlerMapping(WebSocketHandler webSocketHandler) {
@@ -66,17 +71,16 @@ class GreetingWebSocketConfiguration {
 
     @Bean
     WebSocketHandler webSocketHandler(GreetingService greetingService) {
-        return new WebSocketHandler() {
-            @Override
-            public Mono<Void> handle(WebSocketSession webSocketSession) {
+        return webSocketSession -> {
 
-                Flux<WebSocketMessage> receive = webSocketSession.receive();
-                Flux<String> names = receive.map(WebSocketMessage::getPayloadAsText);
-                Flux<String> requestFlux = names.flatMap(greetingService::greet);
-                Flux<WebSocketMessage> webSocketMessageFlux = requestFlux.map(webSocketSession::textMessage);
-                return webSocketSession.send(webSocketMessageFlux);
+            var receive = webSocketSession.receive()
+                    .map(WebSocketMessage::getPayloadAsText)
+                    .flatMap(greetingService::greet)
+                    .map(webSocketSession::textMessage)
+                    .doOnEach(webSocketMessageSignal -> log.info(webSocketMessageSignal.getType()))
+                    .doFinally(signal -> log.info("finally"+ signal.toString()));
+            return webSocketSession.send(receive);
 
-            }
         };
     }
 
@@ -95,12 +99,14 @@ class GreetingService {
                 .delayElements(Duration.ofSeconds(1)).subscribeOn(Schedulers.elastic());
     }
 
-    Flux<String> greetOnce() {
-        return Flux.just("Hi there");
+    Mono<String> greetOnce(String name) {
+        return Mono.just("Hi there "+ name);
     }
 
     Flux<String> greet(String name) {
-        return Flux.just(name);
+        return Flux.fromStream(
+                Stream.generate(() -> "The name = " + name)
+        ).delayElements(Duration.ofSeconds(10));
     }
 }
 
